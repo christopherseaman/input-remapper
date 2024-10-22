@@ -404,8 +404,7 @@ class Daemon:
 
         if self.config_dir is None:
             logger.error(
-                'Request to autoload "%s" before a user told the service about their '
-                "session using set_config_dir",
+                'Request to autoload "%s" before a user told the service about their session using set_config_dir',
                 group_key,
             )
             return
@@ -545,3 +544,4 @@ class Daemon:
         if group_key in self.injectors:
             del self.injectors[group_key]
         self.autoload_history.forget(group_key)
+
