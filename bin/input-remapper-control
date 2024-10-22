@@ -41,7 +41,7 @@ from inputremapper.logging.logger import logger
 # log level is applied before anything is logged
 
 
-class Commands(Enum):
+class Commands(str, Enum):
     AUTOLOAD = "autoload"
     START = "start"
     STOP = "stop"
@@ -49,7 +49,7 @@ class Commands(Enum):
     HELLO = "hello"
 
 
-class Internals(Enum):
+class Internals(str, Enum):
     # internal stuff that the gui uses
     START_DAEMON = "start-daemon"
     START_READER_SERVICE = "start-reader-service"
@@ -310,9 +310,9 @@ def main(options: Options) -> None:
         return
 
     if options.command is not None:
-        if options.command in Internals:
+        if options.command in [e.value for e in Internals]:
             input_remapper_control.internals(options.command, options.debug)
-        elif options.command in Commands:
+        elif options.command in [e.value for e in Commands]:
             from inputremapper.daemon import Daemon
 
             daemon = Daemon.connect(fallback=False)
