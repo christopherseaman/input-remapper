@@ -244,29 +244,19 @@ class Injector(multiprocessing.Process):
         return None
 
     def _grab_devices(self) -> Dict[DeviceHash, evdev.InputDevice]:
-        """Grab all InputDevices that match a mappings' origin_hash."""
-        # use a dict because the InputDevice is not directly hashable
-        needed_devices = {}
-        input_configs = set()
-
-        # find all unique input_config's
-        for mapping in self.preset:
-            for input_config in mapping.input_combination:
-                input_configs.add(input_config)
-
-        # find all unique input_device's
-        for input_config in input_configs:
-            if not (device := self._find_input_device(input_config)):
-                # there is no point in trying the fallback because
-                # self._update_preset already did that.
-                continue
-            needed_devices[device.path] = device
-
         grabbed_devices = {}
-        for device in needed_devices.values():
-            if device := self._grab_device(device):
-                grabbed_devices[get_device_hash(device)] = device
-
+        for input_config in set(input_config for mapping in self.preset for input_config in mapping.input_combination):
+            device = self._find_input_device(input_config) or self._find_input_device_fallback(input_config)
+            if device:
+                for attempt in range(5):  # Try up to 5 times
+                    try:
+                        grabbed_device = self._grab_device(device)
+                        if grabbed_device:
+                            grabbed_devices[get_device_hash(grabbed_device)] = grabbed_device
+                            break
+                    except (OSError, IOError):
+                        logger.warning(f"Failed to grab {device.path}, attempt {attempt + 1}")
+                        time.sleep(1)  # Wait before retrying
         return grabbed_devices
 
     def _update_preset(self):
@@ -481,3 +471,4 @@ class Injector(multiprocessing.Process):
             except OSError as error:
                 # it might have disappeared
                 logger.debug("OSError for ungrab on %s: %s", source.path, str(error))
+

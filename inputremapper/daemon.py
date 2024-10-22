@@ -50,6 +50,7 @@ from inputremapper.configs.paths import PathUtils
 from inputremapper.user import UserUtils
 from inputremapper.injection.macros.macro import macro_variables
 from inputremapper.injection.global_uinputs import GlobalUInputs
+import asyncio
 
 
 BUS_NAME = "inputremapper.Control"
@@ -521,12 +522,21 @@ class Daemon:
             injector = Injector(group, preset, self.mapping_parser)
             injector.start()
             self.injectors[group.key] = injector
-        except OSError:
-            # I think this will never happen, probably leftover from
-            # some earlier version
+        except OSError as e:
+            logger.error(f"Failed to start injector: {e}")
             return False
 
+        # Add a reconnection task
+        asyncio.create_task(self._monitor_and_reconnect(group_key, preset_name))
+
         return True
+
+    async def _monitor_and_reconnect(self, group_key: str, preset_name: str):
+        while True:
+            await asyncio.sleep(5)  # Check every 5 seconds
+            if self.injectors.get(group_key) is None or self.injectors[group_key].get_state() != InjectorState.RUNNING:
+                logger.info(f"Attempting to reconnect {group_key}")
+                self.start_injecting(group_key, preset_name)
 
     def stop_all(self):
         """Stop all injections."""
@@ -538,3 +548,4 @@ class Daemon:
         """Used for tests."""
         logger.info('Received "%s" from client', out)
         return out
+

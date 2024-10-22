@@ -80,34 +80,42 @@ class EventReader:
         self.stop_event.set()
 
     async def read_loop(self) -> AsyncIterator[evdev.InputEvent]:
-        stop_task = asyncio.Task(self.stop_event.wait())
-        loop = asyncio.get_running_loop()
-        events_ready = asyncio.Event()
-        loop.add_reader(self._source.fileno(), events_ready.set)
-
         while True:
-            _, pending = await asyncio.wait(
-                {stop_task, asyncio.Task(events_ready.wait())},
-                return_when=asyncio.FIRST_COMPLETED,
-            )
+            try:
+                stop_task = asyncio.Task(self.stop_event.wait())
+                loop = asyncio.get_running_loop()
+                events_ready = asyncio.Event()
+                loop.add_reader(self._source.fileno(), events_ready.set)
 
-            fd_broken = os.stat(self._source.fileno()).st_nlink == 0
-            if fd_broken:
-                # happens when the device is unplugged while reading, causing 100% cpu
-                # usage because events_ready.set is called repeatedly forever,
-                # while read_loop will hang at self._source.read_one().
-                logger.error("fd broke, was the device unplugged?")
+                while True:
+                    _, pending = await asyncio.wait(
+                        {stop_task, asyncio.Task(events_ready.wait())},
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
 
-            if stop_task.done() or fd_broken:
-                for task in pending:
-                    task.cancel()
-                loop.remove_reader(self._source.fileno())
-                logger.debug("read loop stopped")
-                return
+                    fd_broken = os.stat(self._source.fileno()).st_nlink == 0
+                    if fd_broken:
+                        logger.error("fd broke, was the device unplugged?")
+                        break
 
-            events_ready.clear()
-            while event := self._source.read_one():
-                yield event
+                    if stop_task.done():
+                        for task in pending:
+                            task.cancel()
+                        loop.remove_reader(self._source.fileno())
+                        logger.debug("read loop stopped")
+                        return
+
+                    events_ready.clear()
+                    while event := self._source.read_one():
+                        yield event
+
+            except (OSError, FileNotFoundError) as e:
+                logger.error(f"Device error: {e}. Attempting to reconnect...")
+                await asyncio.sleep(1)  # Wait before trying to reconnect
+                try:
+                    self._source = evdev.InputDevice(self._source.path)
+                except OSError:
+                    continue
 
     def send_to_handlers(self, event: InputEvent) -> bool:
         """Send the event to the NotifyCallbacks.
