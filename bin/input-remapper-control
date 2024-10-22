@@ -310,23 +310,26 @@ def main(options: Options) -> None:
         return
 
     if options.command is not None:
-        if options.command in Internals:
-            input_remapper_control.internals(options.command, options.debug)
-        elif options.command in Commands:
-            from inputremapper.daemon import Daemon
+        try:
+            command = Internals(options.command)
+            input_remapper_control.internals(command, options.debug)
+        except ValueError:
+            try:
+                command = Commands(options.command)
+                from inputremapper.daemon import Daemon
 
-            daemon = Daemon.connect(fallback=False)
+                daemon = Daemon.connect(fallback=False)
 
-            input_remapper_control.set_daemon(daemon)
+                input_remapper_control.set_daemon(daemon)
 
-            input_remapper_control.communicate(
-                options.command,
-                options.device,
-                options.config_dir,
-                options.preset,
-            )
-        else:
-            logger.error('Unknown command "%s"', options.command)
+                input_remapper_control.communicate(
+                    command,
+                    options.device,
+                    options.config_dir,
+                    options.preset,
+                )
+            except ValueError:
+                logger.error('Unknown command "%s"', options.command)
     else:
         if options.list_devices:
             input_remapper_control.list_devices()
