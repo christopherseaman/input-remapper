@@ -179,6 +179,10 @@ class EventReader:
             # no handler took care of it, forward it
             self.forward(event)
 
+    def is_device_available(self) -> bool:
+        """Check if the device is still available."""
+        return os.path.exists(self._source.path)
+
     async def run(self):
         """Start doing things.
 
@@ -191,11 +195,16 @@ class EventReader:
             self._source.fd,
         )
 
-        async for event in self.read_loop():
+        while not self.stop_event.is_set():
+            if not self.is_device_available():
+                logger.info(f"Device {self._source.path} is no longer available")
+                break
+
             try:
-                await self.handle(
-                    InputEvent.from_event(event, origin_hash=self._device_hash)
-                )
+                async for event in self.read_loop():
+                    await self.handle(
+                        InputEvent.from_event(event, origin_hash=self._device_hash)
+                    )
             except Exception as e:
                 logger.error("Handling event %s failed: %s", event, e)
                 traceback.print_exception(e)

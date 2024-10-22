@@ -347,32 +347,26 @@ class Daemon:
         self.config_dir = config_dir
         self.global_config.load_config(str(config_path))
 
-    def _autoload(self, group_key: str):
-        """Check if autoloading is a good idea, and if so do it.
-
-        Parameters
-        ----------
-        group_key
-            unique identifier used by the groups object
-        """
+    def _autoload(self, group_key: str) -> bool:
+        """Check if autoloading is a good idea, and if so do it."""
         self.refresh(group_key)
 
         group = groups.find(key=group_key)
         if group is None:
             # even after groups.refresh, the device is unknown, so it's
             # either not relevant for input-remapper, or not connected yet
-            return
+            return False
 
         preset = self.global_config.get(["autoload", group.key], log_unknown=False)
 
         if preset is None:
             # no autoloading is configured for this device
-            return
+            return False
 
         if not isinstance(preset, str):
             # maybe another dict or something, who knows. Broken config
             logger.error("Expected a string for autoload, but got %s", preset)
-            return
+            return False
 
         logger.info('Autoloading for "%s"', group.key)
 
@@ -382,10 +376,14 @@ class Daemon:
                 preset,
                 group.key,
             )
-            return
+            return False
 
-        self.start_injecting(group.key, preset)
+        if not self.start_injecting(group.key, preset):
+            logger.error(f"Failed to start injecting for {group.key}")
+            return False
+
         self.autoload_history.remember(group.key, preset)
+        return True
 
     @remove_timeout
     def autoload_single(self, group_key: str):
@@ -412,7 +410,8 @@ class Daemon:
             )
             return
 
-        self._autoload(group_key)
+        if not self._autoload(group_key):
+            self.handle_device_disconnection(group_key)
 
     @remove_timeout
     def autoload(self):
@@ -538,3 +537,11 @@ class Daemon:
         """Used for tests."""
         logger.info('Received "%s" from client', out)
         return out
+
+    def handle_device_disconnection(self, group_key: str):
+        """Handle a device disconnection."""
+        logger.info(f"Handling disconnection for group {group_key}")
+        self.stop_injecting(group_key)
+        if group_key in self.injectors:
+            del self.injectors[group_key]
+        self.autoload_history.forget(group_key)

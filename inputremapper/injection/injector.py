@@ -30,6 +30,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from multiprocessing.connection import Connection
 from typing import Dict, List, Optional, Tuple, Union
+import os
 
 import evdev
 
@@ -389,6 +390,10 @@ class Injector(multiprocessing.Process):
             raise e
         return forward_to
 
+    def _are_devices_available(self) -> bool:
+        """Check if all devices are still available."""
+        return all(os.path.exists(device.path) for device in self._devices)
+
     def run(self) -> None:
         """The injection worker that keeps injecting until terminated.
 
@@ -458,26 +463,25 @@ class Injector(multiprocessing.Process):
         self._msg_pipe[0].send(InjectorState.RUNNING)
 
         try:
-            loop.run_until_complete(asyncio.gather(*coroutines))
-        except RuntimeError as error:
-            # the loop might have been stopped via a `CLOSE` message,
-            # which causes the error message below. This is expected behavior
-            if str(error) != "Event loop stopped before Future completed.":
-                raise error
-        except OSError as error:
+            while not self._stop_event.is_set():
+                if not self._are_devices_available():
+                    logger.info("One or more devices are no longer available")
+                    break
+                await asyncio.sleep(1)  # Check device availability every second
+        except Exception as error:
             logger.error("Failed to run injector coroutines: %s", str(error))
+        finally:
+            self._cleanup()
 
-        if len(coroutines) > 0:
-            # expected when stop_injecting is called,
-            # during normal operation as well as tests this point is not
-            # reached otherwise.
-            logger.debug("Injector coroutines ended")
-
-        for source in sources.values():
-            # ungrab at the end to make the next injection process not fail
-            # its grabs
+    def _cleanup(self):
+        """Clean up resources when stopping the injector."""
+        for source in self.sources.values():
             try:
                 source.ungrab()
             except OSError as error:
-                # it might have disappeared
                 logger.debug("OSError for ungrab on %s: %s", source.path, str(error))
+
+        for forward_device in self.forward_devices.values():
+            forward_device.close()
+
+        self._msg_pipe[0].send(InjectorState.STOPPED)
