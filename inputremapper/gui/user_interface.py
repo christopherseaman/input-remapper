@@ -415,3 +415,11 @@ class UserInterface:
     def on_gtk_preset_name_input_return(self, _, event: Gdk.EventKey):
         if event.keyval == Gdk.KEY_Return:
             self.on_gtk_rename_clicked()
+
+    def on_start_injection_clicked(self, *args):
+        try:
+            if not self.controller.start_injecting():
+                self.show_error_dialog(_("Failed to apply preset"))
+        except Exception as e:
+            logger.error(f"Error in start injection: {str(e)}")
+            self.show_error_dialog(_("An error occurred while applying the preset"))

@@ -555,29 +555,19 @@ class DataManager:
             {InjectorState.STOPPED}, self.publish_injector_state
         )
 
-    def start_injecting(self) -> bool:
-        """Start injecting the active preset for the active group.
-
-        returns if the startup was successfully initialized.
-        Will send "injector_state" message once the startup is complete.
-        """
-        if not self.active_preset or not self.active_group:
-            raise DataManagementError("Cannot start injection: Preset is not set")
-
-        self._daemon.set_config_dir(self._config.get_dir())
-        assert self.active_preset.name is not None
-        if self._daemon.start_injecting(self.active_group.key, self.active_preset.name):
-            self.do_when_injector_state(
-                {
-                    InjectorState.RUNNING,
-                    InjectorState.FAILED,
-                    InjectorState.NO_GRAB,
-                    InjectorState.UPGRADE_EVDEV,
-                },
-                self.publish_injector_state,
-            )
-            return True
-        return False
+    def start_injecting(self):
+        try:
+            if self._daemon.start_injecting(self.active_group.key, self.active_preset.name):
+                logger.info(f"Successfully started injection for {self.active_group.key}")
+                return True
+            else:
+                logger.error(f"Failed to start injection for {self.active_group.key}")
+                self.message_broker.error(_("Failed to apply preset"))
+                return False
+        except Exception as e:
+            logger.error(f"Error starting injection: {str(e)}")
+            self.message_broker.error(_("Failed to apply preset: {0}").format(str(e)))
+            return False
 
     def get_state(self) -> InjectorState:
         """The state of the injector."""
@@ -607,3 +597,4 @@ class DataManager:
             return True
 
         GLib.timeout_add(100, do)
+
