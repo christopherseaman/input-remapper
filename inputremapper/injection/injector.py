@@ -395,38 +395,30 @@ class Injector(multiprocessing.Process):
         return all(os.path.exists(device.path) for device in self._devices)
 
     def run(self) -> None:
-        """The injection worker that keeps injecting until terminated.
-
-        Stuff is non-blocking by using asyncio in order to do multiple things
-        somewhat concurrently.
-
-        Use this function as starting point in a process. It creates
-        the loops needed to read and map events and keeps running them.
-        """
+        """The injection worker that keeps injecting until terminated."""
         logger.info('Starting injecting the preset for "%s"', self.group.key)
 
-        # create a new event loop, because somehow running an infinite loop
-        # that sleeps on iterations (joystick_to_mouse) in one process causes
-        # another injection process to screw up reading from the grabbed
-        # device.
+        # create a new event loop
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
 
+        try:
+            loop.run_until_complete(self._run_async())
+        except Exception as error:
+            logger.error("Failed to run injector coroutines: %s", str(error))
+        finally:
+            self._cleanup()
+            loop.close()
+
+    async def _run_async(self) -> None:
+        """Asynchronous part of the run method."""
         self._devices = self.group.get_devices()
-
-        # InputConfigs may not contain the origin_hash information, this will try to make a
-        # good guess if the origin_hash information is missing or invalid.
         self._update_preset()
-
-        # grab devices as early as possible. If events appear that won't get
-        # released anymore before the grab they appear to be held down forever
         sources = self._grab_devices()
         forward_devices = {}
         for device_hash, device in sources.items():
             forward_devices[device_hash] = self._create_forwarding_device(device)
 
-        # create this within the process after the event loop creation,
-        # so that the macros use the correct loop
         self.context = Context(
             self.preset,
             sources,
@@ -436,7 +428,6 @@ class Injector(multiprocessing.Process):
         self._stop_event = asyncio.Event()
 
         if len(sources) == 0:
-            # maybe the preset was empty or something
             logger.error("Did not grab any device")
             self._msg_pipe[0].send(InjectorState.NO_GRAB)
             return
@@ -445,7 +436,6 @@ class Injector(multiprocessing.Process):
         coroutines = []
 
         for device_hash in sources:
-            # actually doing things
             event_reader = EventReader(
                 self.context,
                 sources[device_hash],
@@ -456,22 +446,20 @@ class Injector(multiprocessing.Process):
 
         coroutines.append(self._msg_listener())
 
-        # set the numlock state to what it was before injecting, because
-        # grabbing devices screws this up
         set_numlock(numlock_state)
 
         self._msg_pipe[0].send(InjectorState.RUNNING)
 
-        try:
-            while not self._stop_event.is_set():
-                if not self._are_devices_available():
-                    logger.info("One or more devices are no longer available")
-                    break
-                await asyncio.sleep(1)  # Check device availability every second
-        except Exception as error:
-            logger.error("Failed to run injector coroutines: %s", str(error))
-        finally:
-            self._cleanup()
+        while not self._stop_event.is_set():
+            if not self._are_devices_available():
+                logger.info("One or more devices are no longer available")
+                break
+            await asyncio.sleep(1)  # Check device availability every second
+
+        # Cancel all running coroutines
+        for coro in coroutines:
+            coro.cancel()
+        await asyncio.gather(*coroutines, return_exceptions=True)
 
     def _cleanup(self):
         """Clean up resources when stopping the injector."""
