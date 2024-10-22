@@ -440,96 +440,91 @@ class Daemon:
             self._autoload(group_key)
 
     def start_injecting(self, group_key: str, preset_name: str) -> bool:
-        """Start injecting the preset for the device.
+        logger.info(f'Request to start injecting for "{group_key}", preset "{preset_name}"')
 
-        Returns True on success. If an injection is already ongoing for
-        the specified device it will stop it automatically first.
+        try:
+            self.refresh(group_key)
 
-        Parameters
-        ----------
-        group_key
-            The unique key of the group
-        preset_name
-            The name of the preset
-        """
-        logger.info('Request to start injecting for "%s"', group_key)
+            if self.config_dir is None:
+                logger.error("Config directory not set")
+                return False
 
-        self.refresh(group_key)
+            group = groups.find(key=group_key)
 
-        if self.config_dir is None:
-            logger.error(
-                "Request to start an injectoin before a user told the service about "
-                "their session using set_config_dir",
+            if group is None:
+                logger.error(f'Could not find group "{group_key}"')
+                return False
+
+            preset_path = PurePath(
+                self.config_dir,
+                "presets",
+                PathUtils.sanitize_path_component(group.name),
+                f"{preset_name}.json",
             )
+
+            logger.debug(f"Loading preset from {preset_path}")
+
+            preset = Preset(preset_path)
+
+            try:
+                preset.load()
+            except FileNotFoundError as error:
+                logger.error(f"Preset file not found: {str(error)}")
+                return False
+            except Exception as error:
+                logger.error(f"Error loading preset: {str(error)}")
+                return False
+
+            # Path to a dump of the xkb mappings, to provide more human
+            # readable keys in the correct keyboard layout to the service.
+            # The service cannot use `xmodmap -pke` because it's running via
+            # systemd.
+            xmodmap_path = os.path.join(self.config_dir, "xmodmap.json")
+            try:
+                with open(xmodmap_path, "r") as file:
+                    # do this for each injection to make sure it is up to
+                    # date when the system layout changes.
+                    xmodmap = json.load(file)
+                    logger.debug('Using keycodes from "%s"', xmodmap_path)
+
+                    # this creates the keyboard_layout._xmodmap, which we need to do now
+                    # otherwise it might be created later which will override the changes
+                    # we do here.
+                    # Do we really need to lazyload in the keyboard_layout?
+                    # this kind of bug is stupid to track down
+                    keyboard_layout.get_name(0)
+                    keyboard_layout.update(xmodmap)
+                    # the service now has process wide knowledge of xmodmap
+                    # keys of the users session
+            except FileNotFoundError:
+                logger.error('Could not find "%s"', xmodmap_path)
+
+            for mapping in preset:
+                # only create those uinputs that are required to avoid
+                # confusing the system. Seems to be especially important with
+                # gamepads, because some apps treat the first gamepad they found
+                # as the only gamepad they'll ever care about.
+                self.global_uinputs.prepare_single(mapping.target_uinput)
+
+            if self.injectors.get(group_key) is not None:
+                self.stop_injecting(group_key)
+
+            try:
+                injector = Injector(group, preset, self.mapping_parser)
+                injector.start()
+                self.injectors[group.key] = injector
+            except OSError as e:
+                logger.error(f"Failed to start injector: {e}")
+                return False
+
+            # Add a reconnection task
+            asyncio.create_task(self._monitor_and_reconnect(group_key, preset_name))
+
+            return True
+
+        except Exception as e:
+            logger.error(f"Unexpected error in start_injecting: {str(e)}")
             return False
-
-        group = groups.find(key=group_key)
-
-        if group is None:
-            logger.error('Could not find group "%s"', group_key)
-            return False
-
-        preset_path = PurePath(
-            self.config_dir,
-            "presets",
-            PathUtils.sanitize_path_component(group.name),
-            f"{preset_name}.json",
-        )
-
-        # Path to a dump of the xkb mappings, to provide more human
-        # readable keys in the correct keyboard layout to the service.
-        # The service cannot use `xmodmap -pke` because it's running via
-        # systemd.
-        xmodmap_path = os.path.join(self.config_dir, "xmodmap.json")
-        try:
-            with open(xmodmap_path, "r") as file:
-                # do this for each injection to make sure it is up to
-                # date when the system layout changes.
-                xmodmap = json.load(file)
-                logger.debug('Using keycodes from "%s"', xmodmap_path)
-
-                # this creates the keyboard_layout._xmodmap, which we need to do now
-                # otherwise it might be created later which will override the changes
-                # we do here.
-                # Do we really need to lazyload in the keyboard_layout?
-                # this kind of bug is stupid to track down
-                keyboard_layout.get_name(0)
-                keyboard_layout.update(xmodmap)
-                # the service now has process wide knowledge of xmodmap
-                # keys of the users session
-        except FileNotFoundError:
-            logger.error('Could not find "%s"', xmodmap_path)
-
-        preset = Preset(preset_path)
-
-        try:
-            preset.load()
-        except FileNotFoundError as error:
-            logger.error(str(error))
-            return False
-
-        for mapping in preset:
-            # only create those uinputs that are required to avoid
-            # confusing the system. Seems to be especially important with
-            # gamepads, because some apps treat the first gamepad they found
-            # as the only gamepad they'll ever care about.
-            self.global_uinputs.prepare_single(mapping.target_uinput)
-
-        if self.injectors.get(group_key) is not None:
-            self.stop_injecting(group_key)
-
-        try:
-            injector = Injector(group, preset, self.mapping_parser)
-            injector.start()
-            self.injectors[group.key] = injector
-        except OSError as e:
-            logger.error(f"Failed to start injector: {e}")
-            return False
-
-        # Add a reconnection task
-        asyncio.create_task(self._monitor_and_reconnect(group_key, preset_name))
-
-        return True
 
     async def _monitor_and_reconnect(self, group_key: str, preset_name: str):
         while True:
@@ -548,4 +543,5 @@ class Daemon:
         """Used for tests."""
         logger.info('Received "%s" from client', out)
         return out
+
 
